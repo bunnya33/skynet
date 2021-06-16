@@ -893,6 +893,10 @@ end
 skynet.error = c.error
 skynet.tracelog = c.trace
 
+function skynet.errorf(fmt, ...)
+    skynet.error(string.format(tostring(fmt), ...))
+end
+
 -- true: force on
 -- false: force off
 -- nil: optional (use skynet.trace() to trace one message)
@@ -1054,5 +1058,7 @@ vscdebug.init(skynet, {
 	suspend = suspend,
 	resume = coroutine_resume,
 })
+
+require "functions"
 
 return skynet
