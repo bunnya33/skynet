@@ -63,7 +63,7 @@ LUA_CLIB_SKYNET = \
   lua-memory.c \
   lua-multicast.c \
   lua-cluster.c \
-  lua-crypt.c lsha1.c \
+  lua-crypt.c lmd5.c lsha1.c lsha2.c lcrc.c\
   lua-sharedata.c \
   lua-stm.c \
   lua-debugchannel.c \
