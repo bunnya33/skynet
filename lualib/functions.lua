@@ -49,14 +49,15 @@ local function dump_value_(v)
     return tostring(v)
 end
 
-function dump(v, desc, nesting)
+function dump(v, desc, nesting , printcall)
+    printcall = printcall or print
     if type(nesting) ~= "number" then nesting = 3 end
 
     local lookupTable = {}
     local result = {}
 
     local traceback = string.split(debug.traceback("", 2), "\n")
-    print("dump from: " .. string.trim(traceback[3]))
+    printcall("dump from: " .. string.trim(traceback[3]))
 
     local function dump_(value, description, indent, nest, keylen)
         description = description or "<var>"
@@ -102,7 +103,7 @@ function dump(v, desc, nesting)
     dump_(v, desc, "- ", 1)
 
     for _ , line in ipairs(result) do
-        print(line)
+        printcall(line)
     end
 end
 
