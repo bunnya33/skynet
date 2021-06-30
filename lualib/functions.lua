@@ -388,6 +388,10 @@ function io.filesize(path)
     return size
 end
 
+function io.guid()
+    return io.open("/proc/sys/kernel/random/uuid", "r"):read()
+end
+
 function table.nums(t)
     local count = 0
     for k, v in pairs(t) do
