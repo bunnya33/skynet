@@ -527,97 +527,35 @@ function string.trim(input)
     return string.gsub(input, "[ \t\n\r]+$", "")
 end
 
-function check_service_define(service_handle)
-    local skynet = require "skynet"
-    local services_path = skynet.getenv("services_path")
-    if not services_path then
-        return false ,"未指定服务定义路径 services_path"
-    end
-
-    local path = services_path .. "/" .. SERVICE_NAME .. ".json"
-    if not io.exists(path) then
-        return false ,"未找到 服务定义json文件 " .. path
-    end
-    local content = io.readfile(path)
-    if not content then
-        return false ,"读取" .. path .. "文件失败！"
-    end
-
-    local ok , obj = pcall(cjson.decode,content)
-
-    local sname = ""
-    if ok then
-        if not obj.service_name then
-            return false ,"decode file " .. path .. " undefined service_name" 
+function search_service_handles(service_handle,filter)
+    local handles = {}
+    for k , v in pairs(service_handle) do
+        if type(v) == "function" and ( not filter or table.indexof(filter,k) == false) then
+            table.insert(handles,k)
         end
-        sname = obj.service_name
-        for k , v in pairs(obj.service) do
-            if not v.name then
-                return false ,"decode file " .. path .. " failed . index : " .. k .. " not defined name key" 
-            end
-
-            if not v.method then
-                return false ,"decode file " .. path .. " failed . index : " .. k .. " not defined method key" 
-            end
-            if not service_handle[v.name] then
-                return false ,"service " .. SERVICE_NAME .. " handle not define [" .. v.name .. "] method"
-            end
-        end
-    else
-        return false ,"decode file " .. path .. " failed . " .. obj
     end
 
-    return true , sname
+    return handles
 end
 
 function register_service_instance(service_name)
     local skynet = require "skynet"
-    local services_path = skynet.getenv("services_path")
-    if not services_path then
-        return "未指定服务定义路径 services_path"
+    local service_handle = skynet.call("servicesmgr","lua","get_service_handle",service_name)
+
+    if not service_handle then
+        skynet.error("未找到服务 " .. service_name)
+        return nil
     end
 
-    local path = services_path .. "/" .. service_name .. ".json"
-    if not io.exists(path) then
-        return "未找到 ["  .. service_name .. "] 服务定义文件 ".. path
+    local instance = {
+    }
+
+    for i = 1 , #service_handle.handles do
+        local handlename = service_handle.handles[i]
+        instance[handlename] = {}
+        instance[handlename]["call"] = function(...) return skynet.call(service_handle.service,"lua",handlename,...) end
+        instance[handlename]["send"] = function(...) skynet.send(service_handle.service,"lua",handlename,...) end
     end
-    local content = io.readfile(path)
-    if not content then
-        return "读取" .. path .. "文件失败！"
-    end
 
-    local ok , obj = pcall(cjson.decode,content)
-
-    if ok then
-        local instance = {}
-
-        if not obj.service_name then
-            return false ,"decode file " .. path .. " undefined service_name" 
-        end
-
-        for k , v in pairs(obj.service) do
-            if not v.name then
-                return "decode file " .. path .. " failed . index : " .. k .. " not defined name key" 
-            end
-
-            if not v.method then
-                return "decode file " .. path .. " failed . index : " .. k .. " not defined method key" 
-            end
-
-            if v.method == "call" then
-                instance[v.name] = function(...)
-                    return skynet.call(obj.service_name,"lua",v.name,...)
-                end 
-            else
-                instance[v.name] = function(...)
-                    local args = {...}
-                    return skynet.send(obj.service_name,"lua",v.name,...)
-                end
-            end
-        end
-
-        return instance
-    else
-        return "decode file " .. path .. " failed . " .. obj
-    end
+    return instance
 end
