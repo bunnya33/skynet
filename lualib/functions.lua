@@ -275,6 +275,11 @@ function iskindof(obj, classname)
     return false
 end
 
+function math.round(value)
+    value = checknumber(value)
+    return math.floor(value + 0.5)
+end
+
 function io.exists(path)
     local file = io.open(path, "r")
     if file then
