@@ -2,11 +2,14 @@ local skynet = require "skynet"
 local socket = require "http.sockethelper"
 local internal = require "http.internal"
 local dns = require "skynet.dns"
+
 local string = string
 local table = table
+local pcall = pcall
+local error = error
+local pairs = pairs
 
 local httpc = {}
-
 
 local async_dns
 
@@ -15,22 +18,53 @@ function httpc.dns(server,port)
 	dns.server(server,port)
 end
 
+local default_port = {
+	http = 80,
+	https = 443,
+}
 
-local function check_protocol(host)
-	local protocol = host:match("^[Hh][Tt][Tt][Pp][Ss]?://")
-	if protocol then
-		host = string.gsub(host, "^"..protocol, "")
-		protocol = string.lower(protocol)
-		if protocol == "https://" then
-			return "https", host
-		elseif protocol == "http://" then
-			return "http", host
-		else
-			error(string.format("Invalid protocol: %s", protocol))
-		end
-	else
-		return "http", host
+local function parse_host(host)
+	local colon1 = host:find(":", 1, true)
+	if not colon1 then
+		-- no colon: bare hostname or bare ipv4
+		local htype = host:find("^%d+%.%d+%.%d+%.%d+$") and "ipv4" or "hostname"
+		return host, nil, htype
 	end
+
+	if host:find(":", colon1 + 1, true) then
+		-- two or more colons: ipv6
+		local ipv6, port = host:match("^%[(.-)%]:?(%d*)$")
+		if ipv6 then
+			return ipv6, port ~= "" and tonumber(port) or nil, "ipv6"
+		end
+		error(string.format("Invalid host: bare IPv6 address '%s', use '[%s]' instead", host, host))
+	end
+
+	-- single colon: host:port
+	local h, port = host:match("^(.-):(%d+)$")
+	if h then
+		local htype = h:find("^%d+%.%d+%.%d+%.%d+$") and "ipv4" or "hostname"
+		return h, tonumber(port), htype
+	end
+	return host, nil, "hostname"
+end
+
+local function parse_url(host)
+	local protocol, hostname = host:match "^(%a+)://(.*)"
+	if protocol then
+		protocol = string.lower(protocol)
+	else
+		protocol = "http"
+		hostname = host
+	end
+	local hostheader = hostname
+	local htype, port
+	hostname, port, htype = parse_host(hostname)
+	port = port or default_port[protocol]
+	if not port then
+		error("Invalid protocol: " .. protocol)
+	end
+	return protocol, hostname, port, htype, hostheader
 end
 
 local SSLCTX_CLIENT = nil
@@ -62,30 +96,23 @@ local function gen_interface(protocol, fd, hostname)
 end
 
 local function connect(host, timeout)
-	local protocol
-	protocol, host = check_protocol(host)
-	local hostaddr, port = host:match"([^:]+):?(%d*)$"
-	if port == "" then
-		port = protocol=="http" and 80 or protocol=="https" and 443
-	else
-		port = tonumber(port)
-	end
-	local hostname
-	if not hostaddr:match(".*%d+$") then
-		hostname = hostaddr
+	local protocol, hostname, port, htype, hostheader = parse_url(host)
+	local hostaddr = hostname
+	if htype == "hostname" then
 		if async_dns then
-			hostaddr = dns.resolve(hostname)
+			local msg
+			hostaddr, msg = dns.resolve(hostname)
+			if not hostaddr then
+				error(string.format("%s dns resolve failed msg:%s", hostname, msg))
+			end
 		end
 	end
+
 	local fd = socket.connect(hostaddr, port, timeout)
 	if not fd then
-		error(string.format("%s connect error host:%s, port:%s, timeout:%s", protocol, hostaddr, port, timeout))
+		error(string.format("%s connect error host:%s, port:%s, timeout:%s", protocol, hostname, port, timeout))
 	end
-	-- print("protocol hostname port", protocol, hostname, port)
-	local interface = gen_interface(protocol, fd, hostname)
-	if interface.init then
-		interface.init()
-	end
+	local interface = gen_interface(protocol, fd, htype == "hostname" and hostname or nil)
 	if timeout then
 		skynet.timeout(timeout, function()
 			if not interface.finish then
@@ -93,7 +120,10 @@ local function connect(host, timeout)
 			end
 		end)
 	end
-	return fd, interface, host
+	if interface.init then
+		interface.init(htype == "hostname" and hostname or nil)
+	end
+	return fd, interface, hostheader
 end
 
 local function close_interface(interface, fd)

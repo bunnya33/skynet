@@ -4,6 +4,7 @@ local skynet_require = require "skynet.require"
 local tostring = tostring
 local coroutine = coroutine
 local assert = assert
+local error = error
 local pairs = pairs
 local pcall = pcall
 local table = table
@@ -69,7 +70,7 @@ local watching_session = {}
 local error_queue = {}
 local fork_queue = { h = 1, t = 0 }
 
-local auxsend, auxtimeout
+local auxsend, auxtimeout, auxwait
 do ---- avoid session rewind conflict
 	local csend = c.send
 	local cintcommand = c.intcommand
@@ -139,6 +140,12 @@ do ---- avoid session rewind conflict
 		return session
 	end
 
+	local function auxwait_checkconflict()
+		local session = c.genid()
+		checkconflict(session)
+		return session
+	end
+
 	local function auxsend_checkrewind(addr, proto, msg, sz)
 		local session = csend(addr, proto, nil, msg, sz)
 		if session and session > dangerzone_low and session <= dangerzone_up then
@@ -157,15 +164,26 @@ do ---- avoid session rewind conflict
 		return session
 	end
 
+	local function auxwait_checkrewind()
+		local session = c.genid()
+		if session > dangerzone_low and session <= dangerzone_up then
+			-- enter dangerzone
+			set_checkconflict(session)
+		end
+		return session
+	end
+
 	set_checkrewind = function()
 		auxsend = auxsend_checkrewind
 		auxtimeout = auxtimeout_checkrewind
+		auxwait = auxwait_checkrewind
 	end
 
 	set_checkconflict = function(session)
 		reset_dangerzone(session)
 		auxsend = auxsend_checkconflict
 		auxtimeout = auxtimeout_checkconflict
+		auxwait = auxwait_checkconflict
 	end
 
 	-- in safezone at the beginning
@@ -515,7 +533,7 @@ function skynet.yield()
 end
 
 function skynet.wait(token)
-	local session = c.genid()
+	local session = auxwait()
 	token = token or coroutine.running()
 	suspend_sleep(session, token)
 	sleep_session[token] = nil
@@ -652,7 +670,11 @@ function skynet.exit()
 	for address in pairs(tmp) do
 		c.send(address, skynet.PTYPE_ERROR, 0, "")
 	end
-	c.callback(function() end)
+	c.callback(function(prototype, msg, sz, session, source)
+		if session ~= 0 and source ~= 0 then
+			c.send(source, skynet.PTYPE_ERROR, session, "")
+		end
+	end)
 	c.command("EXIT")
 	-- quit service
 	coroutine_yield "QUIT"
@@ -970,19 +992,19 @@ function skynet.newservice(name, ...)
 	return skynet.call(".launcher", "lua" , "LAUNCH", "snlua", name, ...)
 end
 
-function skynet.uniqueservice(global, ...)
-	if global == true then
+function skynet.uniqueservice(name, ...)
+	if name == true then
 		return assert(skynet.call(".service", "lua", "GLAUNCH", ...))
 	else
-		return assert(skynet.call(".service", "lua", "LAUNCH", global, ...))
+		return assert(skynet.call(".service", "lua", "LAUNCH", name, ...))
 	end
 end
 
-function skynet.queryservice(global, ...)
-	if global == true then
+function skynet.queryservice(name, ...)
+	if name == true then
 		return assert(skynet.call(".service", "lua", "GQUERY", ...))
 	else
-		return assert(skynet.call(".service", "lua", "QUERY", global, ...))
+		return assert(skynet.call(".service", "lua", "QUERY", name, ...))
 	end
 end
 
@@ -1072,10 +1094,20 @@ function skynet.stat(what)
 	return c.intcommand("STAT", what)
 end
 
+local function task_traceback(co)
+	if co == "BREAK" then
+		return co
+	elseif timeout_traceback and timeout_traceback[co] then
+		return timeout_traceback[co]
+	else
+		return traceback(co)
+	end
+end
+
 function skynet.task(ret)
 	if ret == nil then
 		local t = 0
-		for session,co in pairs(session_id_coroutine) do
+		for _,co in pairs(session_id_coroutine) do
 			if co ~= "BREAK" then
 				t = t + 1
 			end
@@ -1093,23 +1125,13 @@ function skynet.task(ret)
 	if tt == "table" then
 		for session,co in pairs(session_id_coroutine) do
 			local key = string.format("%s session: %d", tostring(co), session)
-			if co == "BREAK" then
-				ret[key] = "BREAK"
-			elseif timeout_traceback and timeout_traceback[co] then
-				ret[key] = timeout_traceback[co]
-			else
-				ret[key] = traceback(co)
-			end
+			ret[key] = task_traceback(co)
 		end
 		return
 	elseif tt == "number" then
 		local co = session_id_coroutine[ret]
 		if co then
-			if co == "BREAK" then
-				return "BREAK"
-			else
-				return traceback(co)
-			end
+			return task_traceback(co)
 		else
 			return "No session"
 		end
@@ -1126,7 +1148,7 @@ end
 function skynet.uniqtask()
 	local stacks = {}
 	for session, co in pairs(session_id_coroutine) do
-		local stack = traceback(co)
+		local stack = task_traceback(co)
 		local info = stacks[stack] or {count = 0, sessions = {}}
 		info.count = info.count + 1
 		if info.count < 10 then

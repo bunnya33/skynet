@@ -64,6 +64,7 @@ static void *
 thread_socket(void *p) {
 	struct monitor * m = p;
 	skynet_initthread(THREAD_SOCKET);
+	skynet_handle_register_thread();
 	for (;;) {
 		int r = skynet_socket_poll();
 		if (r==0)
@@ -96,6 +97,7 @@ thread_monitor(void *p) {
 	int i;
 	int n = m->count;
 	skynet_initthread(THREAD_MONITOR);
+	skynet_handle_register_thread();
 	for (;;) {
 		CHECK_ABORT
 		for (i=0;i<n;i++) {
@@ -129,6 +131,7 @@ static void *
 thread_timer(void *p) {
 	struct monitor * m = p;
 	skynet_initthread(THREAD_TIMER);
+	skynet_handle_register_thread();
 	for (;;) {
 		skynet_updatetime();
 		skynet_socket_updatetime();
@@ -158,6 +161,7 @@ thread_worker(void *p) {
 	struct monitor *m = wp->m;
 	struct skynet_monitor *sm = m->m[id];
 	skynet_initthread(THREAD_WORKER);
+	skynet_handle_register_thread();
 	struct message_queue * q = NULL;
 	while (!m->quit) {
 		q = skynet_context_message_dispatch(sm, q, weight);
@@ -206,10 +210,10 @@ start(int thread) {
 	create_thread(&pid[1], thread_timer, m);
 	create_thread(&pid[2], thread_socket, m);
 
-	static int weight[] = { 
+	static int weight[] = {
 		-1, -1, -1, -1, 0, 0, 0, 0,
-		1, 1, 1, 1, 1, 1, 1, 1, 
-		2, 2, 2, 2, 2, 2, 2, 2, 
+		1, 1, 1, 1, 1, 1, 1, 1,
+		2, 2, 2, 2, 2, 2, 2, 2,
 		3, 3, 3, 3, 3, 3, 3, 3, };
 	struct worker_parm wp[thread];
 	for (i=0;i<thread;i++) {
@@ -224,19 +228,19 @@ start(int thread) {
 	}
 
 	for (i=0;i<thread+3;i++) {
-		pthread_join(pid[i], NULL); 
+		pthread_join(pid[i], NULL);
 	}
 
 	free_monitor(m);
 }
 
 static void
-bootstrap(struct skynet_context * logger, const char * cmdline) {
+bootstrap(uint32_t logger_handle, const char * cmdline) {
 	int sz = strlen(cmdline);
 	char name[sz+1];
 	char args[sz+1];
 	int arg_pos;
-	sscanf(cmdline, "%s", name);  
+	sscanf(cmdline, "%s", name);
 	arg_pos = strlen(name);
 	if (arg_pos < sz) {
 		while(cmdline[arg_pos] == ' ') {
@@ -246,15 +250,19 @@ bootstrap(struct skynet_context * logger, const char * cmdline) {
 	} else {
 		args[0] = '\0';
 	}
-	struct skynet_context *ctx = skynet_context_new(name, args);
-	if (ctx == NULL) {
-		skynet_error(NULL, "Bootstrap error : %s\n", cmdline);
-		skynet_context_dispatchall(logger);
+	const uint32_t handle = skynet_context_new(name, args);
+	if (handle == 0) {
+		struct skynet_context *logger = skynet_handle_grab(logger_handle);
+		if (logger != NULL) {
+			skynet_error(NULL, "Bootstrap error : %s\n", cmdline);
+			skynet_context_dispatchall(logger);
+			skynet_context_release(logger);
+		}
 		exit(1);
 	}
 }
 
-void 
+void
 skynet_start(struct skynet_config * config) {
 	// register SIGHUP for log file reopen
 	struct sigaction sa;
@@ -269,22 +277,22 @@ skynet_start(struct skynet_config * config) {
 		}
 	}
 	skynet_harbor_init(config->harbor);
-	skynet_handle_init(config->harbor);
+	skynet_handle_init(config->harbor, config->thread);
 	skynet_mq_init();
 	skynet_module_init(config->module_path);
 	skynet_timer_init();
 	skynet_socket_init();
 	skynet_profile_enable(config->profile);
 
-	struct skynet_context *ctx = skynet_context_new(config->logservice, config->logger);
-	if (ctx == NULL) {
+	const uint32_t logger_handle = skynet_context_new(config->logservice, config->logger);
+	if (logger_handle == 0) {
 		fprintf(stderr, "Can't launch %s service\n", config->logservice);
 		exit(1);
 	}
 
-	skynet_handle_namehandle(skynet_context_handle(ctx), "logger");
+	skynet_handle_namehandle(logger_handle, "logger");
 
-	bootstrap(ctx, config->bootstrap);
+	bootstrap(logger_handle, config->bootstrap);
 
 	start(config->thread);
 

@@ -147,7 +147,7 @@ _ctrl(struct gate * g, const void * msg, int sz) {
 		}
 		return;
 	}
-	skynet_error(ctx, "[gate] Unkown command : %s", command);
+	skynet_error(ctx, "[gate] Unknown command : %s", command);
 }
 
 static void
@@ -250,6 +250,7 @@ dispatch_socket_message(struct gate *g, const struct skynet_socket_message * mes
 			memset(c, 0, sizeof(*c));
 			c->id = -1;
 			_report(g, "%d close", message->id);
+			skynet_socket_close(ctx, message->id);
 		}
 		break;
 	}

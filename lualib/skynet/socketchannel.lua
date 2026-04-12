@@ -26,7 +26,7 @@ socket_channel.error = socket_error
 function socket_channel.channel(desc)
 	local c = {
 		__host = assert(desc.host),
-		__port = assert(desc.port),
+		__port = desc.port,
 		__backup = desc.backup,
 		__auth = desc.auth,
 		__response = desc.response,	-- It's for session mode
@@ -60,6 +60,10 @@ local function close_channel_socket(self)
 	if self.__sock then
 		local so = self.__sock
 		self.__sock = false
+		if self.__wait_response then
+			skynet.wakeup(self.__wait_response)
+			self.__wait_response = nil
+		end
 		-- never raise error
 		pcall(socket.close,so[1])
 	end
@@ -112,6 +116,11 @@ local function dispatch_by_session(self)
 					end
 					skynet.wakeup(co)
 				end
+				if not self.__sock then
+					-- closed
+					wakeup_all(self, "channel_closed")
+					break
+				end
 			else
 				self.__thread[session] = nil
 				skynet.error("socket: unknown session :", session)
@@ -128,7 +137,7 @@ local function dispatch_by_session(self)
 end
 
 local function pop_response(self)
-	while true do
+	while self.__sock do
 		local func,co = table.remove(self.__request, 1), table.remove(self.__thread, 1)
 		if func then
 			return func, co
@@ -207,6 +216,11 @@ local function dispatch_by_order(self)
 				self.__result_data[co] = result_data
 			end
 			skynet.wakeup(co)
+			if not self.__sock then
+				-- closed
+				wakeup_all(self, "channel_closed")
+				break
+			end
 		else
 			close_channel_socket(self)
 			local errmsg
@@ -314,7 +328,7 @@ local function connect_once(self)
 							self.__overload = true
 							overload(true)
 						else
-							skynet.error(string.format("WARNING: %d K bytes need to send out (fd = %d %s:%s)", size, id, self.__host, self.__port))
+							skynet.error(string.format("WARNING: %d K bytes need to send out (fd = %d)", size, id), self.__host, self.__port)
 						end
 					end
 				end
@@ -450,7 +464,7 @@ local function block_connect(self, once)
 
 	r = check_connection(self)
 	if r == nil then
-		skynet.error(string.format("Connect to %s:%d failed (%s)", self.__host, self.__port, err))
+		skynet.error("Connect failed", err, self.__host, self.__port)
 		error(socket_error)
 	else
 		return r
@@ -539,9 +553,9 @@ end
 
 function channel:changehost(host, port)
 	self.__host = host
-	if port then
+    if port then
 		self.__port = port
-	end
+    end
 	if not self.__closed then
 		close_channel_socket(self)
 	end
